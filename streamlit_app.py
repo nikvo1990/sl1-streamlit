@@ -20,10 +20,13 @@ import streamlit as st
 _HERE = pathlib.Path(__file__).resolve().parent
 DATA = _HERE / "data" / "sl1_dashboard.json"
 PDATA = _HERE / "data" / "sl1_players.json"
+RDATA = _HERE / "data" / "sl1_rounds.json"
 if not DATA.exists():  # local fallback when running from the scripts folder
     DATA = _HERE.parent / "workspace" / "dashboard" / "sl1_dashboard.json"
 if not PDATA.exists():
     PDATA = _HERE.parent / "workspace" / "sl1_players.json"
+if not RDATA.exists():
+    RDATA = _HERE.parent / "workspace" / "sl1_rounds.json"
 
 GREEN, RED, CYAN, AMBER, PURPLE = "#4ade80", "#f87171", "#38bdf8", "#fbbf24", "#a78bfa"
 ROLE_COL = {"GK": PURPLE, "DEF": CYAN, "MID": GREEN, "FWD": AMBER}
@@ -56,6 +59,22 @@ def load_players(path: str) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner=False)
+def load_rounds_raw(path: str) -> dict:
+    return json.loads(pathlib.Path(path).read_text())
+
+
+@st.cache_data(show_spinner=False)
+def load_rounds(path: str) -> pd.DataFrame:
+    raw = load_rounds_raw(path)
+    rows = []
+    for m in raw["matches"]:
+        row = {k: v for k, v in m.items() if k not in ("players", "goals")}
+        row["players"] = len(m.get("players", []))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def base_layout(fig: go.Figure, height: int = 520, legend: bool = True) -> go.Figure:
     fig.update_layout(
         template="plotly_dark", height=height, paper_bgcolor=BG, plot_bgcolor=BG,
@@ -75,7 +94,7 @@ st.caption(
     f"{season} · {len(df)} teams · built {str(d.get('generated_at', '')[:16]).replace('T', ' ')}"
 )
 
-tab_team, tab_players = st.tabs(["Team map · xG vs xGA", "Players"])
+tab_team, tab_players, tab_days = st.tabs(["Team map · xG vs xGA", "Players", "Match days"])
 
 # --------------------------------------------------------------------------- #
 # Team map
@@ -281,3 +300,183 @@ with tab_players:
             "Roles come from matchday line-ups. 143 of the 152 league goals are credited to a player; "
             "the other nine are own goals. Eight games is a small sample: treat per-90 extremes as noise."
         )
+
+# --------------------------------------------------------------------------- #
+# Match days
+# --------------------------------------------------------------------------- #
+with tab_days:
+    raw = load_rounds_raw(str(RDATA))
+    matches = raw["matches"]
+    rdf = load_rounds(str(RDATA))
+    round_list = sorted(rdf["round"].unique(), key=lambda r: float(r))
+    names = [f"MD {r}" for r in round_list]
+
+    c1, c2 = st.columns([1, 3])
+    pick = c1.selectbox("Match day", names, index=len(names) - 1, key="md_pick")
+    rnd = round_list[names.index(pick)]
+    rms = [m for m in matches if str(m["round"]) == str(rnd)]
+
+    goals = sum(m["hg"] + m["ag"] for m in rms)
+    xg_pairs = [(m["xgh"], m["xga"]) for m in rms if m["xgh"] is not None]
+    xg_tot = sum(h + a for h, a in xg_pairs) if xg_pairs else None
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Matches", len(rms))
+    k2.metric("Goals", goals)
+    k3.metric("Goals per match", f"{goals / max(1, len(rms)):.1f}")
+    k4.metric("Total xG", "not published" if xg_tot is None else f"{xg_tot:.1f}")
+
+    # spotlight on the widest win, ties to the most recent kickoff
+    margin_max = max(abs(m["hg"] - m["ag"]) for m in rms)
+    cands = [m for m in rms if abs(m["hg"] - m["ag"]) == margin_max]
+    gmax = max(m["hg"] + m["ag"] for m in cands)
+    cands = [m for m in cands if m["hg"] + m["ag"] == gmax]
+    spot = max(cands, key=lambda m: m["date"])
+
+    st.caption(f"Biggest win of the round: {margin_max} goal margin")
+    st.markdown(f"### {spot['home']} {spot['hg']} – {spot['ag']} {spot['away']}")
+    st.caption(
+        " · ".join(x for x in [spot.get("stadium"), spot.get("referee"), spot.get("date")] if x)
+        + ("" if spot["xgh"] is not None else "  ·  xG not published for this match yet")
+    )
+
+    duel_defs = [
+        ("Possession", spot.get("posh"), spot.get("posa"), "{:.0f}%"),
+        ("Shots", spot.get("shh"), spot.get("sha"), "{:.0f}"),
+        ("Expected goals", spot.get("xgh"), spot.get("xga"), "{:.2f}"),
+        ("Team VAEP", spot.get("vaeph"), spot.get("vaepa"), "{:.2f}"),
+    ]
+    duel_defs = [d for d in duel_defs if d[1] is not None and d[2] is not None]
+
+    if duel_defs:
+        labs = [d[0] for d in duel_defs]
+        hs = [d[1] / ((d[1] + d[2]) or 1) * 100 for d in duel_defs]
+        as_ = [100 - h for h in hs]
+        figd = go.Figure()
+        figd.add_trace(go.Bar(y=labs, x=hs, orientation="h", name=spot["home"],
+                              marker_color=GREEN, text=[d[3].format(d[1]) for d in duel_defs],
+                              textposition="inside", insidetextanchor="middle",
+                              hovertemplate="%{y}: %{text}<extra></extra>"))
+        figd.add_trace(go.Bar(y=labs, x=as_, orientation="h", name=spot["away"],
+                              marker_color=AMBER, text=[d[3].format(d[2]) for d in duel_defs],
+                              textposition="inside", insidetextanchor="middle",
+                              hovertemplate="%{y}: %{text}<extra></extra>"))
+        figd.update_layout(barmode="stack")
+        figd.update_xaxes(range=[0, 100], visible=False)
+        figd.update_yaxes(autorange="reversed", tickfont=dict(size=11))
+        base_layout(figd, 240)
+        figd.update_layout(margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(figd, use_container_width=True, config={"displayModeBar": False})
+
+    if spot.get("goals"):
+        chips = []
+        for g in sorted(spot["goals"], key=lambda g: (g.get("minute") or 0)):
+            tag = " (pen)" if g.get("penalty") else (" (og)" if g.get("own_goal") else "")
+            chips.append(f"{g.get('minute')}' {g.get('player')}{tag}")
+        st.caption("Goals: " + " · ".join(chips))
+
+    # fixtures and the round's own table
+    def _num(v):
+        return "—" if v is None else f"{v:.2f}"
+
+    fx = pd.DataFrame({
+        "Home": [m["home"] for m in rms],
+        "Score": [f'{m["hg"]}-{m["ag"]}' for m in rms],
+        "Away": [m["away"] for m in rms],
+        "xG home": [_num(m["xgh"]) for m in rms],
+        "xG away": [_num(m["xga"]) for m in rms],
+    })
+
+    rows = []
+    for m in rms:
+        if m["hg"] > m["ag"]:
+            rows += [(m["home"], "W", m["hg"], m["ag"], m["xgh"], m["xga"]),
+                     (m["away"], "L", m["ag"], m["hg"], m["xga"], m["xgh"])]
+        elif m["hg"] < m["ag"]:
+            rows += [(m["home"], "L", m["hg"], m["ag"], m["xgh"], m["xga"]),
+                     (m["away"], "W", m["ag"], m["hg"], m["xga"], m["xgh"])]
+        else:
+            rows += [(m["home"], "D", m["hg"], m["ag"], m["xgh"], m["xga"]),
+                     (m["away"], "D", m["ag"], m["hg"], m["xga"], m["xgh"])]
+    tdf = pd.DataFrame(rows, columns=["Club", "R", "GF", "GA", "xG", "xGA"])
+    tdf["Δ xG"] = (tdf["xG"] - tdf["xGA"]).round(2)
+    tdf = tdf.sort_values(["Δ xG"], ascending=False, na_position="last")
+    tdf["xG"] = tdf["xG"].map(_num)
+    tdf["xGA"] = tdf["xGA"].map(_num)
+
+    left, right = st.columns([1.15, 1])
+    with left:
+        st.subheader("Fixtures and expected goals")
+        st.dataframe(fx, width="stretch", hide_index=True)
+    with right:
+        st.subheader("This round's table")
+        st.dataframe(tdf, width="stretch", hide_index=True, height=380,
+                     column_config={
+                         "Δ xG": st.column_config.NumberColumn(format="%+.2f"),
+                     })
+
+    # player comparison for the round
+    rows_p = [p for m in rms for p in m["players"]]
+    pdf = pd.DataFrame(rows_p)
+    scored = pdf[pdf["gls"].notna()].copy() if "gls" in pdf else pd.DataFrame()
+
+    st.subheader("Finishing against expectation, this round")
+    if scored.empty:
+        st.info("No box-score data published for this round yet.")
+    else:
+        scored["diff"] = scored["gls"] - scored["xg"]
+        ranked = scored.sort_values("diff", ascending=False)
+        pick_rows = pd.concat([ranked.head(8), ranked.tail(4)]).drop_duplicates(subset=["name"])
+        pick_rows = pick_rows.sort_values("diff", ascending=False)
+        figf = go.Figure(go.Bar(
+            y=pick_rows["name"] + " · " + pick_rows["team"].str.split().str[0],
+            x=pick_rows["diff"], orientation="h",
+            marker_color=[GREEN if v >= 0 else RED for v in pick_rows["diff"]],
+            text=[f"{int(g)} goal{'' if g == 1 else 's'} · xG {x:.2f}" if v >= 0 else ""
+                  for g, x, v in zip(pick_rows["gls"], pick_rows["xg"], pick_rows["diff"])],
+            textposition="outside",
+            cliponaxis=False,
+            customdata=pick_rows[["min", "sh"]],
+            hovertemplate="<b>%{y}</b><br>goals minus xG %{x:+.2f}<br>"
+                          "%{customdata[0]:.0f} min · %{customdata[1]:.0f} shots<extra></extra>",
+        ))
+        figf.update_xaxes(title="Goals minus xG", zeroline=True, zerolinecolor="#3d4f66",
+                          showgrid=True, gridcolor=GRID)
+        figf.update_yaxes(autorange="reversed", tickfont=dict(size=10))
+        base_layout(figf, max(300, 26 * len(pick_rows) + 60), legend=False)
+        figf.update_layout(margin=dict(l=10, r=90, t=10, b=10))
+        st.plotly_chart(figf, use_container_width=True, config={"displayModeBar": False})
+
+    st.subheader("Chance creation, this round")
+    if pdf.empty:
+        st.info("No player data for this round yet.")
+    else:
+        creat = pdf[pdf["min"] >= 20].nlargest(12, "sca")
+        figc = go.Figure(go.Bar(
+            y=creat["name"] + " · " + creat["team"].str.split().str[0], x=creat["sca"],
+            orientation="h", marker_color=AMBER,
+            customdata=creat[["kp", "min"]],
+            text=creat["sca"].astype(int), textposition="outside", cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>SCA %{x:.0f} · %{customdata[0]:.0f} key passes · "
+                          "%{customdata[1]:.0f} min<extra></extra>",
+        ))
+        figc.update_xaxes(title="Shot-creating actions", showgrid=True, gridcolor=GRID,
+                          zeroline=False)
+        figc.update_yaxes(autorange="reversed", tickfont=dict(size=10))
+        base_layout(figc, 420, legend=False)
+        figc.update_layout(margin=dict(l=10, r=40, t=10, b=10))
+        st.plotly_chart(figc, use_container_width=True, config={"displayModeBar": False})
+
+    missing = [m for m in rms if m["xgh"] is None or not m["players"]]
+    if missing:
+        st.warning(
+            "Full player numbers are not published yet for "
+            + ", ".join(f'{m["home"]} {m["hg"]}-{m["ag"]} {m["away"]}' for m in missing)
+            + ". The provider posts the box score a day or two after the final whistle; "
+              "the scoreline, goal events and value numbers above are live."
+        )
+
+    st.caption(
+        "Rounds are the provider's own match day numbering, taken from the match detail "
+        "endpoint. One match per club per round, so the table is a single gameweek."
+    )
