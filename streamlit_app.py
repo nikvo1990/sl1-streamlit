@@ -144,7 +144,7 @@ with tab_team:
     fig.add_annotation(x=x0 - pad_x * 0.45, y=y1 + pad_y * 0.45, text="ELITE", showarrow=False,
                        font=dict(size=11, color=GREEN), opacity=0.75)
 
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "scrollZoom": False})
     st.caption("Hover a marker for the exact numbers. Axes reversed on purpose: best attack bottom, best defence right.")
 
     with st.expander("Table", expanded=False):
@@ -153,7 +153,7 @@ with tab_team:
         ].sort_values("xgf_pg", ascending=False)
         st.dataframe(
             table.rename(columns={"name": "Team", "xgf_pg": "xG/g", "xga_pg": "xGA/g"}),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
             column_config={
                 "xG/g": st.column_config.NumberColumn(format="%.2f"),
                 "xGA/g": st.column_config.NumberColumn(format="%.2f"),
@@ -214,7 +214,7 @@ with tab_players:
         fig2.update_xaxes(title="Expected goals", showgrid=True, gridcolor=GRID, zeroline=False)
         fig2.update_yaxes(title="Goals", showgrid=True, gridcolor=GRID, zeroline=False)
         base_layout(fig2, 470)
-        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
 
         st.subheader("Percentile profile against positional peers")
         st.caption("100 means best in his position group, 0 means worst. Everyone shown clears the minutes gate.")
@@ -238,7 +238,7 @@ with tab_players:
         fig3.update_xaxes(side="top", tickangle=-45, tickfont=dict(size=9), automargin=True)
         base_layout(fig3, 520, legend=False)
         fig3.update_layout(margin=dict(l=10, r=10, t=40, b=10))
-        st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig3, width="stretch", config={"displayModeBar": False})
 
         st.subheader("Goalkeepers: goals prevented")
         st.caption("Positive means saving more than the shots faced were worth. Unassisted by shot quality models, "
@@ -263,7 +263,7 @@ with tab_players:
                               zerolinecolor="#3d4f66")
             fig4.update_yaxes(tickfont=dict(size=10))
             base_layout(fig4, max(260, 26 * len(gk) + 60), legend=False)
-            st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig4, width="stretch", config={"displayModeBar": False})
 
         with st.expander("Full player table", expanded=False):
             show = pd.DataFrame({
@@ -274,7 +274,7 @@ with tab_players:
                 "xA": view["xa"].round(2), "SCA/90": view["sca_90"].round(2),
                 "Prog/90": view["prog_90"].round(2), "VAEP/90": view["vaep_90"].round(3),
             }).sort_values("VAEP/90", ascending=False)
-            st.dataframe(show, use_container_width=True, hide_index=True, height=420)
+            st.dataframe(show, width="stretch", hide_index=True, height=420)
 
         st.caption(
             f"Rate stats gated at {gate}+ minutes, so {len(view)} players qualify. "
